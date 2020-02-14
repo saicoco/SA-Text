@@ -11,6 +11,7 @@
 ## Introduction
 
 Regression with gaussian map to detect text accurate.
+![img](figure/WX20200214-220416@2x.png)
 
 ### training
 
@@ -23,6 +24,10 @@ python train_ic15.py --arch resnet50 --batch_size 4 --root_dir /home/gengjiajia/
 ```
 python eval_sanet.py --root_dir /home/gengjiajia/code/OCR/PSENet/touxiang_pian/   --resume checkpoints/ic15_resnet50_bs_4_ep_600/checkpoint.pth.tar  --gpus 1
 ```
+
+### visualization
+
+![img](figure/img_4744.jpg)
 
 ## TODO
 
