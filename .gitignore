@@ -9,6 +9,7 @@ __pycache__/
 *.onnx
 *g
 *G
+outputs/
 # Distribution / packaging
 .Python
 build/
