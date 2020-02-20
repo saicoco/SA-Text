@@ -5,7 +5,10 @@ __pycache__/
 
 # C extensions
 *.so
-
+*.tar
+*.onnx
+*g
+*G
 # Distribution / packaging
 .Python
 build/

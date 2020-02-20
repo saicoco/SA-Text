@@ -44,7 +44,7 @@ def debug(idx, img_paths, imgs, output_root):
     cv2.imwrite(output_root + img_name, res)
 
 def write_result_as_txt(image_name, bboxes, path):
-    filename = util.io.join_path(path, 'res_%s.txt'%(image_name))
+    filename = util.io.join_path(path, '%s.txt'%(image_name))
     lines = []
     for b_idx, bbox in enumerate(bboxes):
         values = [int(v) for v in bbox]
@@ -138,9 +138,13 @@ def test(args):
             sys.stdout.flush()
     model.eval()
     if args.onnx:
-        import torch.onnx.symbolic_opset9
+        import torch.onnx.symbolic_opset9 as onnx_symbolic
+        def upsample_nearest_2d(g, input, output_size):
+            scales = g.op('Constant', value_t=torch.Tensor([1., 1., 2., 2.]))
+            return g.op("Upsample", input, scales, mode_s='nearest')
+        onnx_symbolic = upsample_nearest_2d
         dummy_input = torch.autograd.Variable(torch.randn(1, 3, 640, 640)).cpu()
-        torch.onnx.export(model, dummy_input, 'dbnet.onnx', verbose=False)
+        torch.onnx.export(model, dummy_input, 'sanet.onnx', verbose=False)
         return 0
     total_frame = 0.0
     total_time = 0.0
@@ -159,43 +163,71 @@ def test(args):
 
         outputs = model(img)
         infer_time = time.time()
-        probability_map = outputs.sigmoid()
+        probability_map, border_map = outputs[0].sigmoid(), outputs[1].sigmoid()
 #         print(probability_map.max(), probability_map.min())
         score = probability_map[0, 0]
-        prediction_map = textfill(score.cpu().numpy(), top_threshold=0.7, end_thershold=0.3)
+        border_score = border_map[0, 0]
+#         prediction_map = textfill(score.cpu().numpy(), border_score, top_threshold=0.7, end_thershold=0.2)
         post_time = time.time()
         center_text = torch.where(score > 0.7, torch.ones_like(score), torch.zeros_like(score))
         center_text = center_text.data.cpu().numpy().astype(np.uint8)
 
         text_region = torch.where(score > 0.5, torch.ones_like(score), torch.zeros_like(score))
-        text_region = text_region.data.cpu().numpy().astype(np.uint8)
-
-#         prob_map = probability_map.cpu().numpy()[0, 0] * 255
-
+        border_region = torch.where(border_score > 0.9, torch.ones_like(border_score), torch.zeros_like(border_score))
+        prediction_map = text_region.data.cpu().numpy()
+        border_region = border_region.data.cpu().numpy()
+        prediction_map[border_region==1] = 0
+        
+        prob_map = probability_map.cpu().numpy()[0, 0] * 255
+        bord_map = border_map[0, 0].cpu().numpy() * 255
         out_path = 'outputs/vis_ic15/'
         image_name = data_loader.img_paths[idx].split('/')[-1].split('.')[0]
-        # cv2.imwrite(out_path + image_name + '_prob.png', prob_map.astype(np.uint8))
-#         cv2.imwrite(out_path + image_name + '_cr.png', center_text.astype(np.uint8) * 255)
+#         cv2.imwrite(out_path + image_name + '_prob.png', prob_map.astype(np.uint8))
+#         cv2.imwrite(out_path + image_name + '_bd.png', bord_map.astype(np.uint8))
 #         cv2.imwrite(out_path + image_name + '_tr.png', text_region.astype(np.uint8) * 255)
 #         cv2.imwrite(out_path + image_name + '_fl.png', prediction_map.astype(np.uint8) * 255)
-        
+    
         scale = (org_img.shape[1] * 1.0 / img.shape[1], org_img.shape[0] * 1.0 / img.shape[0])
         bboxes = []
         scale_val = scale_val.cpu().numpy()
-
-#         nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(prediction_map.astype(np.uint8), connectivity=4)
+        nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(prediction_map.astype(np.uint8), connectivity=4)
         t5 = time.time()
-        nLabels = prediction_map.max()
-        print("nLabels:", nLabels)
-        for k in range(1, nLabels+1):
+#         nLabels = prediction_map.max()
+#         print("nLabels:", nLabels)
+        img_h, img_w = prediction_map.shape[:2]
+        for k in range(1, nLabels):
+        
+            size = stats[k, cv2.CC_STAT_AREA]
+#             if size < 10: continue
             # make segmentation map
-            segmap = np.zeros(score.shape, dtype=np.uint8)
-            segmap[prediction_map==k] = 255
+            segmap = np.zeros(prediction_map.shape, dtype=np.uint8)
+            segmap[labels==k] = 255
+#             segmap[np.logical_and(border_score > 0.7, score.cpu().numpy() < 0.05)] = 0   # remove link area
+            x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
+            w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
+#             print("xywh:", x, y, w, h, " size:", size)
+            niter = int(math.sqrt(size * min(w, h) / (w * h)) * 4.3)
+            sx, ex, sy, ey = x - niter, x + w + niter + 1, y - niter, y + h + niter + 1
+#             print("info:", sy, ey, sx, ex)
+            # boundary check
+            if sx < 0 : sx = 0
+            if sy < 0 : sy = 0
+            if ex >= img_w: ex = img_w
+            if ey >= img_h: ey = img_h
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(1 + niter, 1 + niter))
 
-            # contourexpand
-            text_area = np.sum(segmap)
-            kernel = dilated_kernel(text_area)
-            segmap = cv2.dilate(segmap, kernel, iterations=1)
+            segmap[sy:ey, sx:ex] = cv2.dilate(segmap[sy:ey, sx:ex], kernel)
+            ############### original postprocess ################
+#             # make segmentation map
+#             segmap = np.zeros(score.shape, dtype=np.uint8)
+#             segmap[prediction_map==k] = 255
+
+#             # contourexpand
+#             text_area = np.sum(segmap)
+#             kernel = dilated_kernel(text_area)
+            ############## original postprocess ################
+            
+#             segmap = cv2.dilate(segmap, kernel, iterations=1)
             np_contours = np.roll(np.array(np.where(segmap!=0)),1,axis=0).transpose().reshape(-1,2)
             rectangle = cv2.minAreaRect(np_contours)
             box = cv2.boxPoints(rectangle) * 4
@@ -216,7 +248,7 @@ def test(args):
 
         for bbox in bboxes:
             cv2.drawContours(text_box, [bbox.reshape(4, 2)], -1, (0, 255, 0), 2)
-        image_name = data_loader.img_paths[idx].split('/')[-1].split('.')[0]
+        image_name = ".".join(data_loader.img_paths[idx].split('/')[-1].split('.')[:-1])
         write_result_as_txt(image_name, bboxes.reshape((-1, 8)), 'outputs/submit_ic15/')
         
         debug(idx, data_loader.img_paths, [[text_box]], 'outputs/vis_ic15/')

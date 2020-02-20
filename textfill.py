@@ -54,7 +54,7 @@ def textfill(gaussian_map, min_area=10, top_threshold=0.6, end_thershold=0.5):
                 queue.put((tmpx, tmpy, l))
                 pred[tmpx, tmpy] = l
                 pred[x, y] = l
-                kernal_mask[x, y] = l
+                # kernal_mask[x, y] = l
 
     # print(np.where(kernal_mask==0.5))
     # pred[kernal_mask==0.5] = label_num

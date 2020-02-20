@@ -166,8 +166,8 @@ class ResNet(nn.Module):
         )
 
         self.gaussian_head = nn.Conv2d(128, num_classes, kernel_size=1, stride=1, padding=0)
-        # self.center_head = nn.Conv2d(256, num_classes, kernel_size=1, stride=1, padding=0)
-        # self.region_head = nn.Conv2d(256, num_classes, kernel_size=1, stride=1, padding=0)
+        self.center_head = nn.Conv2d(128, 1, kernel_size=1, stride=1, padding=0)
+        self.region_head = nn.Conv2d(128, num_classes, kernel_size=1, stride=1, padding=0)
 
         self.scale = scale
         
@@ -257,15 +257,15 @@ class ResNet(nn.Module):
         out = self.relu3(self.bn3(out))
 
         # upsample
-        out = self._upsample(out, x)
-        out = self.decoder(out)
+#         out = self._upsample(out, x)
+#         out = self.decoder(out)
 
         # heads for probability_map, threshold_map, binarization_map
         gaussian_map = self.gaussian_head(out)
-        # center_map = self.center_head(out)
-        # region_map = self.region_head(out)
-        return gaussian_map
-        # return gaussian_map, center_map, region_map
+        border_map = self.center_head(out)
+#         region_map = self.region_head(out)
+        return gaussian_map, border_map
+#         return gaussian_map, center_map, region_map
 
 
 def resnet18(pretrained=False, **kwargs):

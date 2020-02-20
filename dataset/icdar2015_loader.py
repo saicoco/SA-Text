@@ -63,13 +63,18 @@ def get_bboxes(img, gt_path):
     tags = []
     for line in lines:
         line = util.str.remove_all(line, '\xef\xbb\xbf')
+        if len(line) < 1:
+            continue
         gt = util.str.split(line, ',')
         gt = [i.strip('\ufeff').strip('\xef\xbb\xbf') for i in gt]
         if gt[-1][0] == '#':
             tags.append(False)
         else:
             tags.append(True)
-        box = [int(eval(gt[i])) for i in range(8)]
+        try:
+            box = [int(eval(gt[i])) for i in range(8)]
+        except:
+            print(box)
         box = np.asarray(box)
         bboxes.append(box)
     return np.array(bboxes, dtype=np.float32).reshape((-1, 4, 2)), tags
@@ -363,7 +368,7 @@ def shrink_poly(poly, r):
 
 # SANet
 def gaussian_2d(radius=None):
-    # sigma = ra
+    # sigma = radius/3.
 
     sigma = 10
     spread = 3
@@ -478,9 +483,12 @@ def generate_gaussian_target(polys, h, w):
     """
     m = 3
     heat_map = np.zeros((h, w))
+    poly_mask = np.zeros((h, w))
     border_map = np.zeros((h, w))
-    for poly_idx, poly in enumerate(polys):
+    geometry_map = np.zeros((4, h, w), dtype=np.float32)
 
+    for poly_idx, poly in enumerate(polys):
+        
         r = [None, None, None, None]
         for i in range(4):
             r[i] = min(np.linalg.norm(poly[i] - poly[(i + 1) % 4]),
@@ -500,6 +508,26 @@ def generate_gaussian_target(polys, h, w):
         x1, y1 = poly[1]
         x2, y2 = poly[2]
         x3, y3 = poly[3]
+
+#         # generate deltaX, deltaY
+#         top_long_edge = [poly[0], poly[1]]
+#         bottom_long_edge = [poly[2], poly[3]]
+
+#         if x0 > x3 or y0 > y3:
+#             top_long_edge = [poly[2], poly[3]]
+#             bottom_long_edge = [poly[0], poly[1]]
+
+#         cv2.fillPoly(poly_mask, [poly], poly_idx + 1)
+#         xy_in_poly = np.argwhere(poly_mask == (poly_idx + 1))
+#         for y, x in xy_in_poly:
+#             _, top_drop = point2fixedAxis((x, y), np.array(top_long_edge))
+#             _, bot_drop = point2fixedAxis((x, y), np.array(bottom_long_edge))
+#             top_x, top_y = top_drop - np.array([x, y])
+#             bot_x, bot_y = bot_drop - np.array([x, y])
+#             geometry_map[0, y, x] = top_x
+#             geometry_map[1, y, x] = top_y
+#             geometry_map[2, y, x] = bot_x
+#             geometry_map[3, y, x] = bot_y
 
         topside_pts = list(bresenham(x0, y0, x1, y1))
         bottomside_pts = list(bresenham(x2, y2, x3, y3))
@@ -557,7 +585,7 @@ def generate_gaussian_target(polys, h, w):
                 heat_map[y - y0r : y + y1r, x - x0r : x + x1r] = \
                     np.maximum(heat_map[y - y0r : y + y1r, x - x0r : x + x1r], tmp_gaussian_map[gm_h-y0r:gm_h+y1r, gm_w-x0r:gm_w+x1r])
 
-    return heat_map, border_map
+    return heat_map, border_map, geometry_map
 
 class IC15Loader(data.Dataset):
     def __init__(self, root_dir, is_transform=False, img_size=None, kernel_num=7, min_scale=0.4):
@@ -637,13 +665,14 @@ class IC15Loader(data.Dataset):
         h, w = img.shape[0:2]
         gt_text = np.zeros(img.shape[0:2], dtype='uint8')
         border_map = np.zeros((h, w), dtype='float32')
+        geo_map = np.zeros((4, h, w), dtype='float32')
         training_mask = np.ones(img.shape[0:2], dtype='uint8')
         
         if bboxes.shape[0] > 0:
             bboxes = bboxes.astype(np.int32)
             h, w = img.shape[:2]
             t1 = time.time()
-            gt_text, border_map = generate_gaussian_target(bboxes, h, w)
+            gt_text, border_map, geo_map = generate_gaussian_target(bboxes, h, w)
             dur = time.time() - t1
             for i in range(bboxes.shape[0]):
                 if not tags[i]:
@@ -665,27 +694,31 @@ class IC15Loader(data.Dataset):
         probability_map = torch.from_numpy(gt_text).float()
         training_mask = torch.from_numpy(training_mask).float()
         border_map = torch.from_numpy(border_map).float()
+        geo_map = torch.from_numpy(geo_map).float()
         # '''
 
-        return img, probability_map, training_mask, np.array(ori_img).transpose((2, 0, 1)), border_map
+        return img, probability_map, training_mask, np.array(ori_img).transpose((2, 0, 1)), border_map, geo_map
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     root_dir = sys.argv[1]
     ic15dataset = IC15Loader(root_dir=root_dir, is_transform=True, img_size=512)
     for item in ic15dataset:
-        img, pb_map, train_mask, ori_img, border_map = item
+        img, pb_map, train_mask, ori_img, border_map, geo_map = item
         # print(f'img_shape:{img.shape}, pb_map_shape:{pb_map.shape}')
         seg_map_3c = np.repeat(pb_map[:, :, None].numpy(),3,2)*255
         heatmap=cv2.applyColorMap(seg_map_3c.astype(np.uint8), cv2.COLORMAP_JET)
-        border_mapc = train_mask[:, :].numpy()
+        border_mapc = geo_map[:, :, 0].numpy()
+        print(border_mapc.max(), border_mapc.min())
         att_im = cv2.addWeighted(seg_map_3c.astype(np.uint8), 0.7, np.array(ori_img)[:, :,::-1], 0.2, 0.0)
         # save_img=np.concatenate((np.array(ori_img),att_im),1)
         region = np.where(seg_map_3c[:, :, 0] > int(0 * 255), np.ones_like(seg_map_3c[:, :, 0]) * 255, np.zeros_like(seg_map_3c[:, :, 0]))
+        other_region = np.where(seg_map_3c[:, :, 0] < int(0.2 * 255), np.ones_like(seg_map_3c[:, :, 0]) * 255, np.zeros_like(seg_map_3c[:, :, 0]))
+        region = (region * other_region) / 255.
         heatmap=cv2.applyColorMap(region.astype(np.uint8), cv2.COLORMAP_JET)
-        # cv2.imshow('heatmap', heatmap)
+        cv2.imshow('heatmap', heatmap)
         cv2.imshow('pb_map', att_im)
-        # cv2.imshow("geo_map", border_mapc)
+        cv2.imshow("geo_map", border_mapc)
         # # cv2.imshow('im_map', np.array(ori_img))
         cv2.waitKey()
         cv2.destroyAllWindows()
