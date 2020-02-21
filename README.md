@@ -38,5 +38,5 @@ Training_data: MTWI dataset
 
 Here are two differences from paper: postprogress algorithm and outputs of network.
 
-here are two outputs of networks: border_map and guassian map. **Border map** is used to seperate from two text instances, and **gaussian map** is used to generate text center region. For afraid of two text center region are detach, so we can use border map to delete these pixels that are in two instances border; then we use text center region to generate text instances, finally, we expand text instances by dilate in opencv.
+here are two outputs of networks: border map and guassian map. **Border map** is used to separate from two text instances, and **gaussian map** is used to generate text center region. For afraid of two text center regions are attach, so we can use a border map to delete these pixels that are in two instances border; then we use text center region to generate text instances, finally, we expand text instances by dilating in opencv.
 
