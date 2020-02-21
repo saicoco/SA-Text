@@ -5,35 +5,38 @@
 * PyTorch v0.4.1+
 * pyclipper
 * Polygon2
-* OpenCV 3.4 (for c++ version pse)
 * opencv-python 3.4
 
 ## Introduction
 
 Regression with gaussian map to detect text accurate.
-![img](figure/WX20200214-220416@2x.png)
+<img src="figure/WX20200214-220416@2x.png" alt="img" style="zoom:50%;" />
 
 ### training
 
-```
-python train_ic15.py --arch resnet50 --batch_size 4 --root_dir /home/gengjiajia/Store/Text-Detection-Datasets/icpr_dataset/ 
+```shell
+python train_ic15.py --arch resnet50 --batch_size 4 --root_dir $data_root_dir  
 ```
 
 ### testing
 
-```
-python eval_sanet.py --root_dir /home/gengjiajia/code/OCR/PSENet/touxiang_pian/   --resume checkpoints/ic15_resnet50_bs_4_ep_600/checkpoint.pth.tar  --gpus 1
+```shell
+python eval_sanet.py --root_dir $data_root_dir  --resume checkpoints/ic15_resnet50_bs_4_ep_xxx/checkpoint.pth.tar  --gpus 1
 ```
 
 ### visualization
 
-![img](figure/img_4744.jpg)
+Training_data: MTWI dataset
 
-## TODO
+|                                                              |                                                        |                                                        |
+| ------------------------------------------------------------ | :----------------------------------------------------: | ------------------------------------------------------ |
+| <img src="figure/1.png" alt="img" style="zoom:25%;" />![img](figure/1.png) | <img src="figure/2.png" alt="img" style="zoom:25%;" /> | <img src="figure/3.png" alt="img" style="zoom:25%;" /> |
 
-- Support curve text
-- Adjust dliate kernel for larget text
-- Post-progress by c++
-- TensorRT support
 
+
+## Differences from original paper
+
+Here are two differences from paper: postprogress algorithm and outputs of network.
+
+here are two outputs of networks: border_map and guassian map. **Border map** is used to seperate from two text instances, and **gaussian map** is used to generate text center region. For afraid of two text center region are detach, so we can use border map to delete these pixels that are in two instances border; then we use text center region to generate text instances, finally, we expand text instances by dilate in opencv.
 

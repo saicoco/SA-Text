@@ -150,9 +150,10 @@ def random_horizontal_flip(imgs):
     return imgs
 
 def random_rotate(imgs):
-    max_angle = 10
+    max_angle = 90
     angle = random.random() * 2 * max_angle - max_angle
     for i in range(len(imgs)):
+        print(imgs[i].shape)
         img = imgs[i]
         w, h = img.shape[:2]
         rotation_matrix = cv2.getRotationMatrix2D((h / 2, w / 2), angle, 1)
@@ -677,7 +678,8 @@ class IC15Loader(data.Dataset):
             for i in range(bboxes.shape[0]):
                 if not tags[i]:
                     cv2.drawContours(training_mask, [bboxes[i]], -1, 0, -1)
-
+        if np.random.uniform(0, 1) > 0.7:
+            img, border_map, gt_text, training_mask = random_rotate([img, border_map, gt_text, training_mask])
         if self.is_transform:
             img = Image.fromarray(img)
             img = img.convert('RGB')
@@ -709,7 +711,6 @@ if __name__ == "__main__":
         seg_map_3c = np.repeat(pb_map[:, :, None].numpy(),3,2)*255
         heatmap=cv2.applyColorMap(seg_map_3c.astype(np.uint8), cv2.COLORMAP_JET)
         border_mapc = geo_map[:, :, 0].numpy()
-        print(border_mapc.max(), border_mapc.min())
         att_im = cv2.addWeighted(seg_map_3c.astype(np.uint8), 0.7, np.array(ori_img)[:, :,::-1], 0.2, 0.0)
         # save_img=np.concatenate((np.array(ori_img),att_im),1)
         region = np.where(seg_map_3c[:, :, 0] > int(0 * 255), np.ones_like(seg_map_3c[:, :, 0]) * 255, np.zeros_like(seg_map_3c[:, :, 0]))
@@ -718,7 +719,7 @@ if __name__ == "__main__":
         heatmap=cv2.applyColorMap(region.astype(np.uint8), cv2.COLORMAP_JET)
         cv2.imshow('heatmap', heatmap)
         cv2.imshow('pb_map', att_im)
-        cv2.imshow("geo_map", border_mapc)
+        # cv2.imshow("geo_map", border_mapc)
         # # cv2.imshow('im_map', np.array(ori_img))
         cv2.waitKey()
         cv2.destroyAllWindows()
