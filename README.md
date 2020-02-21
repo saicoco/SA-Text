@@ -30,7 +30,7 @@ Training_data: MTWI dataset
 
 |                                                              |                                                        |                                                        |
 | ------------------------------------------------------------ | :----------------------------------------------------: | ------------------------------------------------------ |
-| <img src="figure/1.png" alt="img" style="zoom:25%;" />![img](figure/1.png) | <img src="figure/2.png" alt="img" style="zoom:25%;" /> | <img src="figure/3.png" alt="img" style="zoom:25%;" /> |
+| <img src="figure/1.png" alt="img" style="zoom:25%;" />| <img src="figure/2.png" alt="img" style="zoom:25%;" /> | <img src="figure/3.png" alt="img" style="zoom:25%;" /> |
 
 
 
