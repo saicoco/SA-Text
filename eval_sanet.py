@@ -274,7 +274,7 @@ if __name__ == '__main__':
                         help='Path to previous saved model to restart from')
     parser.add_argument('--scale', nargs='?', type=int, default=1,
                         help='Path to previous saved model to restart from')
-    parser.add_argument('--long_size', nargs='?', type=int, default=784,
+    parser.add_argument('--long_size', nargs='?', type=int, default=512,
                         help='Path to previous saved model to restart from')
     parser.add_argument('--min_kernel_area', nargs='?', type=float, default=5.0,
                         help='min kernel area')
