@@ -152,7 +152,15 @@ class Slice(OnnxOpConverter):
 ```
 
 #### Optimize
+Before optimize graph, here need to star rpc server for autotvm by following commands:
+```shell
 
+ python -m tvm.exec.rpc_tracker --host=0.0.0.0 --port=9190 
+ 
+ # start new terminal window
+ CUDA_VISIBLE_DEVICES=1 python -m tvm.exec.rpc_server --tracker=0.0.0.0:9190 --key=p100
+```
+More deitals about autotvm, you can find documents about it [**Auto-tuning a convolutional network for NVIDIA GPU**](https://docs.tvm.ai/tutorials/autotvm/tune_relay_cuda.html)
 ```python
 # you can set different target for graph
 python tvm_optimize/tvm_optimize_graph.py
