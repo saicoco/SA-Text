@@ -120,15 +120,15 @@ class ResNet(nn.Module):
         self.toplayer_relu = nn.ReLU(inplace=True)
 
         # Smooth layers
-        self.smooth1 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.smooth1 = nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1)
         self.smooth1_bn = nn.BatchNorm2d(256)
         self.smooth1_relu = nn.ReLU(inplace=True)
 
-        self.smooth2 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.smooth2 = nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1)
         self.smooth2_bn = nn.BatchNorm2d(256)
         self.smooth2_relu = nn.ReLU(inplace=True)
 
-        self.smooth3 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.smooth3 = nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1)
         self.smooth3_bn = nn.BatchNorm2d(256)
         self.smooth3_relu = nn.ReLU(inplace=True)
 
@@ -165,9 +165,14 @@ class ResNet(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        self.gaussian_head = nn.Conv2d(128, num_classes, kernel_size=1, stride=1, padding=0)
-        self.center_head = nn.Conv2d(128, 1, kernel_size=1, stride=1, padding=0)
-        self.region_head = nn.Conv2d(128, num_classes, kernel_size=1, stride=1, padding=0)
+        self.gaussian_head = nn.Conv2d(128, num_classes, kernel_size=3, stride=1, padding=1)
+        self.center_head = nn.Conv2d(128, 1, kernel_size=3, stride=1, padding=1)
+#         self.geo_head = nn.Conv2d(128, 8, kernel_size=3, stride=1, padding=1)
+
+        # split text instances into different scales
+        # self.gaussian_large_head = nn.Conv2d(128, num_classes, kernel_size=3, stride=1, padding=1)
+        # self.gaussian_mid_head = nn.Conv2d(128, num_classes, kernel_size=3, stride=1, padding=1)
+        # self.gaussian_small_head = nn.Conv2d(128, num_classes, kernel_size=1, stride=1, padding=0)
 
         self.scale = scale
         
@@ -209,9 +214,17 @@ class ResNet(nn.Module):
         _, _, h, w = x.size()
         scale_h = H / h
         scale_w = W / w
-        # return F.upsample(x, size=(H, W)) + y
-        return F.upsample(x, scale_factor=(scale_h, scale_w))
+#         return F.upsample(x, size=(H, W)) + y
+        return F.upsample(x, scale_factor=(scale_h, scale_w)) + y
 
+    def _upsample_concat(self, x, y):
+        _, _, H, W = y.size()
+        _, _, h, w = x.size()
+        scale_h = H / h
+        scale_w = W / w
+        up_x = F.upsample(x, scale_factor=(scale_h, scale_w))
+        return torch.cat([up_x, y], dim=1)
+    
     def forward(self, x):
         h = x
         h = self.conv1(h)
@@ -234,19 +247,19 @@ class ResNet(nn.Module):
 
         c4 = self.latlayer1(c4)
         c4 = self.latlayer1_relu(self.latlayer1_bn(c4))
-        p4 = self._upsample_add(p5, c4)
+        p4 = self._upsample_concat(p5, c4)
         p4 = self.smooth1(p4)
         p4 = self.smooth1_relu(self.smooth1_bn(p4))
 
         c3 = self.latlayer2(c3)
         c3 = self.latlayer2_relu(self.latlayer2_bn(c3))
-        p3 = self._upsample_add(p4, c3)
+        p3 = self._upsample_concat(p4, c3)
         p3 = self.smooth2(p3)
         p3 = self.smooth2_relu(self.smooth2_bn(p3))        
 
         c2 = self.latlayer3(c2)
         c2 = self.latlayer3_relu(self.latlayer3_bn(c2))
-        p2 = self._upsample_add(p3, c2)
+        p2 = self._upsample_concat(p3, c2)
         p2 = self.smooth3(p2)
         p2 = self.smooth3_relu(self.smooth3_bn(p2))
 
@@ -260,12 +273,18 @@ class ResNet(nn.Module):
 #         out = self._upsample(out, x)
 #         out = self.decoder(out)
 
+        # heads for different scales
+        # gaussian_large = self.gaussian_large_head(out)
+        # gaussian_mid = self.gaussian_mid_head(out)
+        # gaussian_small = self.gaussian_small_head(out)
+        # border_map = self.center_head(out)
+        # return gaussian_large, gaussian_mid, gaussian_small, border_map
+
         # heads for probability_map, threshold_map, binarization_map
         gaussian_map = self.gaussian_head(out)
         border_map = self.center_head(out)
-#         region_map = self.region_head(out)
+#         geometry_map = F.tanh(self.geo_head(out)) * 512.
         return gaussian_map, border_map
-#         return gaussian_map, center_map, region_map
 
 
 def resnet18(pretrained=False, **kwargs):

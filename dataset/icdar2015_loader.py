@@ -18,6 +18,10 @@ from bresenham import bresenham
 from math import exp
 import time
 
+from tqdm import tqdm
+import glob
+
+
 ic15_root_dir = './data/ICDAR2015/Challenge4/'
 ic15_train_data_dir = ic15_root_dir + 'ch4_training_images/'
 ic15_train_gt_dir = ic15_root_dir + 'ch4_training_localization_transcription_gt/'
@@ -53,7 +57,7 @@ def get_img(img_path):
         img = cv2.imread(img_path)
         img = img[:, :, [2, 1, 0]]
     except Exception as e:
-        raise
+        img = np.zeros((640, 640, 3))
     return img
 
 def get_bboxes(img, gt_path):
@@ -153,7 +157,6 @@ def random_rotate(imgs):
     max_angle = 90
     angle = random.random() * 2 * max_angle - max_angle
     for i in range(len(imgs)):
-        print(imgs[i].shape)
         img = imgs[i]
         w, h = img.shape[:2]
         rotation_matrix = cv2.getRotationMatrix2D((h / 2, w / 2), angle, 1)
@@ -309,7 +312,7 @@ def shrink_poly(poly, r):
     :return: the shrinked poly
     '''
     # shrink ratio
-    R = 0.3
+    R = 0.1
     # find the longer pair
     if np.linalg.norm(poly[0] - poly[1]) + np.linalg.norm(poly[2] - poly[3]) > \
                     np.linalg.norm(poly[0] - poly[3]) + np.linalg.norm(poly[1] - poly[2]):
@@ -371,15 +374,17 @@ def shrink_poly(poly, r):
 def gaussian_2d(radius=None):
     # sigma = radius/3.
 
-    sigma = 10
-    spread = 3
-    radius = int(spread * sigma)
+    # sigma = 10
+    spread = 3.7
+    sigma = radius * 1.0 / spread
+    # radius = int(spread * sigma)
     gaussian_heatmap = np.zeros([2 * radius, 2 * radius], dtype=np.float32)
     for i in range(2 * radius):
             for j in range(2 * radius):
-                tmp_pi = 1 / 2 / np.pi / (sigma ** 2)
+                tmp_pi = 1. / 2. / np.pi / (sigma ** 2)
                 gaussian_heatmap[i, j] = tmp_pi * np.exp(-1 / 2 * ((i - radius - 0.5) ** 2 + (j - radius - 0.5) ** 2) / (sigma ** 2))
-    gaussian_heatmap = gaussian_heatmap / np.max(gaussian_heatmap)
+
+    gaussian_heatmap = gaussian_heatmap / (np.max(gaussian_heatmap))
     return gaussian_heatmap
 
 def find_long_edges(points, bottoms):
@@ -477,58 +482,102 @@ def point2fixedAxis(point, fixedAxis):
     d = np.linalg.norm(np.cross(vector1, vector2))/np.linalg.norm(vector3)
     return d, dropFoot
 
-def generate_gaussian_target(polys, h, w):
+def sort_rectangle(poly):
+    # sort the four coordinates of the polygon, points in poly should be sorted clockwise
+    # First find the lowest point
+    p_lowest = np.argmax(poly[:, 1])
+    if np.count_nonzero(poly[:, 1] == poly[p_lowest, 1]) == 2:
+        # 底边平行于X轴, 那么p0为左上角 - if the bottom line is parallel to x-axis, then p0 must be the upper-left corner
+        p0_index = np.argmin(np.sum(poly, axis=1))
+        p1_index = (p0_index + 1) % 4
+        p2_index = (p0_index + 2) % 4
+        p3_index = (p0_index + 3) % 4
+        return poly[[p0_index, p1_index, p2_index, p3_index]], 0.
+    else:
+        # 找到最低点右边的点 - find the point that sits right to the lowest point
+        p_lowest_right = (p_lowest - 1) % 4
+        p_lowest_left = (p_lowest + 1) % 4
+        angle = np.arctan(-(poly[p_lowest][1] - poly[p_lowest_right][1])/(poly[p_lowest][0] - poly[p_lowest_right][0]))
+        # assert angle > 0
+        if angle <= 0:
+            return poly, angle
+        
+        if angle/np.pi * 180 > 45:
+            # 这个点为p2 - this point is p2
+            p2_index = p_lowest
+            p1_index = (p2_index - 1) % 4
+            p0_index = (p2_index - 2) % 4
+            p3_index = (p2_index + 1) % 4
+            return poly[[p0_index, p1_index, p2_index, p3_index]], -(np.pi/2 - angle)
+        else:
+            # 这个点为p3 - this point is p3
+            p3_index = p_lowest
+            p0_index = (p3_index + 1) % 4
+            p1_index = (p3_index + 2) % 4
+            p2_index = (p3_index + 3) % 4
+            return poly[[p0_index, p1_index, p2_index, p3_index]], angle
+
+def generate_gaussian_target(polys, h, w, training_mask):
     """
     Args:
         polys: [4, 2]
     """
     m = 3
     heat_map = np.zeros((h, w))
+    R_scales = [0, 10, 50, 100, 150, 200]
     poly_mask = np.zeros((h, w))
     border_map = np.zeros((h, w))
-    geometry_map = np.zeros((4, h, w), dtype=np.float32)
+    geometry_map = np.zeros((4, h, w), np.float32)
+    densebox = np.zeros((8, h, w), np.float32)
+    densebox_anchor = np.indices((h, w))[::-1].astype(np.float32)
+    mask = np.zeros((h, w))
 
     for poly_idx, poly in enumerate(polys):
         
         r = [None, None, None, None]
+        edge = []
         for i in range(4):
+            edge.append(np.linalg.norm(poly[i] - poly[(i + 1) % 4]))
             r[i] = min(np.linalg.norm(poly[i] - poly[(i + 1) % 4]),
                        np.linalg.norm(poly[i] - poly[(i - 1) % 4]))
+
         # score map
         shrinked_poly = shrink_poly(poly.copy(), r).astype(np.int32)[np.newaxis, :, :]
         cv2.fillPoly(border_map, [poly], 1)
         cv2.fillPoly(border_map, shrinked_poly, 0)
+        cv2.fillPoly(mask, shrinked_poly, 1)
+        poly_h = min(np.linalg.norm(poly[0] - poly[3]), np.linalg.norm(poly[1] - poly[2]))
+        poly_w = min(np.linalg.norm(poly[0] - poly[1]), np.linalg.norm(poly[2] - poly[3]))
+        
+        if min(poly_h, poly_w) < 8:
+            cv2.fillPoly(training_mask, poly.astype(np.int32)[np.newaxis, :, :], 0)
 
-        bottom = find_bottom(poly)
-        e1, e2 = find_long_edges(poly, bottom)
-        id0, id1 = e1[0]
-        id2, id3 = e2[0]
-        poly = np.array(poly)[[id0, id1, id2, id3]]
+        poly, angle = sort_rectangle(poly)
+        for i in range(0, 4):
+            for j in range(0, 2):
+                cv2.fillConvexPoly(densebox[i * 2 + j], shrinked_poly, float(poly[i][j]))
+
+
+        if min(edge) < 1:
+            continue
+            
+        ratio = max(edge) * 1.0 / min(edge) * 1.0
+
+            
+        if ratio < 1.5:
+            poly = polys[poly_idx]
+
+        else:
+            bottom = find_bottom(poly)
+            e1, e2 = find_long_edges(poly, bottom)
+            id0, id1 = e1[0]
+            id2, id3 = e2[0]
+            poly = np.array(poly)[[id0, id1, id2, id3]]
         
         x0, y0 = poly[0]
         x1, y1 = poly[1]
         x2, y2 = poly[2]
         x3, y3 = poly[3]
-
-#         # generate deltaX, deltaY
-#         top_long_edge = [poly[0], poly[1]]
-#         bottom_long_edge = [poly[2], poly[3]]
-
-#         if x0 > x3 or y0 > y3:
-#             top_long_edge = [poly[2], poly[3]]
-#             bottom_long_edge = [poly[0], poly[1]]
-
-#         cv2.fillPoly(poly_mask, [poly], poly_idx + 1)
-#         xy_in_poly = np.argwhere(poly_mask == (poly_idx + 1))
-#         for y, x in xy_in_poly:
-#             _, top_drop = point2fixedAxis((x, y), np.array(top_long_edge))
-#             _, bot_drop = point2fixedAxis((x, y), np.array(bottom_long_edge))
-#             top_x, top_y = top_drop - np.array([x, y])
-#             bot_x, bot_y = bot_drop - np.array([x, y])
-#             geometry_map[0, y, x] = top_x
-#             geometry_map[1, y, x] = top_y
-#             geometry_map[2, y, x] = bot_x
-#             geometry_map[3, y, x] = bot_y
 
         topside_pts = list(bresenham(x0, y0, x1, y1))
         bottomside_pts = list(bresenham(x2, y2, x3, y3))
@@ -550,26 +599,45 @@ def generate_gaussian_target(polys, h, w):
             radius.append(radius_p)
         # print("process_poly:{}, get_line:{}, cal_radius:{}".format(t2-t1, t3-t2, t4-t3))
         R = int(radius[0])
-
-        # if R==0:
-        #     continue
-        # try:
         
-        tmp_gaussian_map = gaussian_2d(R)
-        char_box = np.array([top_pts[0], top_pts[min(R, len(top_pts)-1)], bot_pts[min(R, len(bot_pts)-1)], bot_pts[0]]).astype(np.float32)
+        if R==0:
+            continue
+        index = 0
+        R_map = R
+#        R_scales = [0, 10, 50, 100, 150, 200]
+        if R > R_scales[0] and R <= R_scales[1]:
+            R_map = R_scales[1]
+            index = 0
+        elif R > R_scales[1] and R <= R_scales[2]:
+            R_map = R_scales[2]//2
+            index = 1
+        elif R > R_scales[2] and R <= R_scales[3]:
+            R_map = 30
+            index = 2
+        elif R > R_scales[3] and R <= R_scales[4]:
+            R_map = 90
+            index = 2
+        elif R > R_scales[4] and R <= R_scales[5]:
+            R_map = 120
+            index = 2
+        elif R > R_scales[5]:
+            R_map = 150
+            
+        tmp_gaussian_map = gaussian_2d(R_map)
+            
+        char_box = np.array([top_pts[0], top_pts[min(R*2, len(top_pts)-1)], bot_pts[min(R*2, len(bot_pts)-1)], bot_pts[0]]).astype(np.float32)
         top_left = np.array([np.min(char_box[:, 0]), np.min(char_box[:, 1])]).astype(np.int32)
         char_box -= top_left[None, :]
-        # except:
-        #     continue
+        
         tmp_gaussian_map = four_point_transform(tmp_gaussian_map, char_box)
         gm_h, gm_w = list(map(lambda x:int(x/2.), tmp_gaussian_map.shape))
-        Rs = int(0.3 * R)
+        Rs = int(0.3 * R) if ratio > 1.5 else int(0.2 * R)
         
-        for i, Rk in enumerate(radius[Rs:min(-Rs, -1)]):
-    
-            cpts = center_pts[Rs + i]
+        strides = min(int(len(radius) * 0.2), int(R))
+        for i, Rk in enumerate(radius[strides:-strides]):
+            cpts = center_pts[strides + i]
             cx, cy = list(map(int, cpts))
-            cx1, cy1 = list(map(int, center_pts[Rs + i + 1]))
+            cx1, cy1 = list(map(int, center_pts[strides + i + 1]))
             cent_pts = list(bresenham(cx, cy, cx1, cy1))
             for ct_pt in cent_pts:
                 x, y = list(map(int, ct_pt))
@@ -585,8 +653,10 @@ def generate_gaussian_target(polys, h, w):
     
                 heat_map[y - y0r : y + y1r, x - x0r : x + x1r] = \
                     np.maximum(heat_map[y - y0r : y + y1r, x - x0r : x + x1r], tmp_gaussian_map[gm_h-y0r:gm_h+y1r, gm_w-x0r:gm_w+x1r])
-
-    return heat_map, border_map, geometry_map
+    
+    densebox = densebox - np.tile(densebox_anchor, (4, 1, 1))
+    densebox = densebox * mask[np.newaxis, :, :]
+    return heat_map, border_map, geometry_map, training_mask, densebox
 
 class IC15Loader(data.Dataset):
     def __init__(self, root_dir, is_transform=False, img_size=None, kernel_num=7, min_scale=0.4):
@@ -601,7 +671,7 @@ class IC15Loader(data.Dataset):
 
         self.img_paths = []
         self.gt_paths = []
-        self.random_scale = np.array([0.5, 1, 1.5, 2.0, 2.5, 3.0])
+        self.random_scale = np.array([0.8, 1, 1.5, 2.0, 2.5, 3.0])
         self.background_ratio = 3. / 8.
         self.input_size = 640
         self.aug = augument()
@@ -612,17 +682,23 @@ class IC15Loader(data.Dataset):
 
             img_paths = []
             gt_paths = []
-            for idx, img_name in enumerate(img_names):
+            for idx, img_name in enumerate(tqdm(img_names)):
                 img_path = data_dir + img_name
-                img_paths.append(img_path)
-                
                 gt_name = ".".join(img_name.split('.')[:-1]) + '.txt'
                 gt_path = gt_dir + gt_name
+                    
+                if not os.path.exists(gt_path):
+                    continue
+                img_paths.append(img_path)
                 gt_paths.append(gt_path)
 
             self.img_paths.extend(img_paths)
             self.gt_paths.extend(gt_paths)
-        
+        indexes = list(range(len(self.img_paths)))
+        random.shuffle(indexes)
+        self.img_paths = list(map(lambda x: self.img_paths[x], indexes))
+        self.gt_paths = list(map(lambda x: self.gt_paths[x], indexes))
+
     def __len__(self):
         return len(self.img_paths)
 
@@ -668,18 +744,20 @@ class IC15Loader(data.Dataset):
         border_map = np.zeros((h, w), dtype='float32')
         geo_map = np.zeros((4, h, w), dtype='float32')
         training_mask = np.ones(img.shape[0:2], dtype='uint8')
-        
+        densebox = np.zeros((8, h, w), np.float32)
+
         if bboxes.shape[0] > 0:
             bboxes = bboxes.astype(np.int32)
             h, w = img.shape[:2]
             t1 = time.time()
-            gt_text, border_map, geo_map = generate_gaussian_target(bboxes, h, w)
+            gt_text, border_map, geo_map, training_mask, densebox = generate_gaussian_target(bboxes, h, w, training_mask)
             dur = time.time() - t1
             for i in range(bboxes.shape[0]):
                 if not tags[i]:
                     cv2.drawContours(training_mask, [bboxes[i]], -1, 0, -1)
         if np.random.uniform(0, 1) > 0.7:
             img, border_map, gt_text, training_mask = random_rotate([img, border_map, gt_text, training_mask])
+            
         if self.is_transform:
             img = Image.fromarray(img)
             img = img.convert('RGB')
@@ -697,30 +775,34 @@ class IC15Loader(data.Dataset):
         training_mask = torch.from_numpy(training_mask).float()
         border_map = torch.from_numpy(border_map).float()
         geo_map = torch.from_numpy(geo_map).float()
+        densebox = torch.from_numpy(densebox).float()
         # '''
 
-        return img, probability_map, training_mask, np.array(ori_img).transpose((2, 0, 1)), border_map, geo_map
+        return img, probability_map, training_mask, np.array(ori_img).transpose((2, 0, 1)), border_map, geo_map, densebox
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     root_dir = sys.argv[1]
     ic15dataset = IC15Loader(root_dir=root_dir, is_transform=True, img_size=512)
     for item in ic15dataset:
-        img, pb_map, train_mask, ori_img, border_map, geo_map = item
-        # print(f'img_shape:{img.shape}, pb_map_shape:{pb_map.shape}')
+        img, pb_map, train_mask, ori_img, border_map, geo_map, densebox = item
+        ori_img = ori_img.transpose((1, 2, 0))
+        # print(f'img_shape:{img.shape}, pb_map_shape:{pb_map.shape}, densebox:{densebox.shape}')
         seg_map_3c = np.repeat(pb_map[:, :, None].numpy(),3,2)*255
+        densebox = densebox.numpy()[2]
+        dense_heatmap=cv2.applyColorMap(densebox.astype(np.uint8), cv2.COLORMAP_JET)
+
         heatmap=cv2.applyColorMap(seg_map_3c.astype(np.uint8), cv2.COLORMAP_JET)
         border_mapc = geo_map[:, :, 0].numpy()
-        att_im = cv2.addWeighted(seg_map_3c.astype(np.uint8), 0.7, np.array(ori_img)[:, :,::-1], 0.2, 0.0)
         # save_img=np.concatenate((np.array(ori_img),att_im),1)
         region = np.where(seg_map_3c[:, :, 0] > int(0 * 255), np.ones_like(seg_map_3c[:, :, 0]) * 255, np.zeros_like(seg_map_3c[:, :, 0]))
-        other_region = np.where(seg_map_3c[:, :, 0] < int(0.2 * 255), np.ones_like(seg_map_3c[:, :, 0]) * 255, np.zeros_like(seg_map_3c[:, :, 0]))
-        region = (region * other_region) / 255.
+        other_region = np.where(seg_map_3c[:, :, 0] > int(0. * 255), seg_map_3c[:, :, 0], np.zeros_like(seg_map_3c[:, :, 0]))
+        region = other_region
         heatmap=cv2.applyColorMap(region.astype(np.uint8), cv2.COLORMAP_JET)
-        cv2.imshow('heatmap', heatmap)
+        att_im = cv2.addWeighted(heatmap, 0.7, np.array(ori_img)[:, :,::-1], 0.2, 0.0)
+        cv2.imshow('heatmap', dense_heatmap)
         cv2.imshow('pb_map', att_im)
-        # cv2.imshow("geo_map", border_mapc)
-        # # cv2.imshow('im_map', np.array(ori_img))
+
         cv2.waitKey()
         cv2.destroyAllWindows()
         
