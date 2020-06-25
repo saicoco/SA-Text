@@ -20,7 +20,7 @@ import time
 
 from tqdm import tqdm
 import glob
-
+import json
 
 ic15_root_dir = './data/ICDAR2015/Challenge4/'
 ic15_train_data_dir = ic15_root_dir + 'ch4_training_images/'
@@ -60,31 +60,40 @@ def get_img(img_path):
         img = np.zeros((640, 640, 3))
     return img
 
-def get_bboxes(img, gt_path):
+def get_bboxes(img, gt_path, keywords=None):
     h, w = img.shape[0:2]
     lines = util.io.read_lines(gt_path)
     bboxes = []
     tags = []
+    texts = [] 
     for line in lines:
         line = util.str.remove_all(line, '\xef\xbb\xbf')
         if len(line) < 1:
             continue
         gt = util.str.split(line, ',')
-        gt = [i.strip('\ufeff').strip('\xef\xbb\xbf') for i in gt]
+        gt = [i.strip('\ufeff').strip('\xef\xbb\xbf').strip('\n') for i in gt]
+        if len(gt) < 5:
+            continue
+
         if gt[-1][0] == '#':
             tags.append(False)
         else:
             tags.append(True)
+        if keywords is not None:
+            text_ids = list(map(lambda x: keywords[x], gt[-1]))
+            print(gt[-1], text_ids)
+            texts.append(text_ids)
         try:
             box = [int(eval(gt[i])) for i in range(8)]
         except:
             print(box)
         box = np.asarray(box)
         bboxes.append(box)
-    return np.array(bboxes, dtype=np.float32).reshape((-1, 4, 2)), tags
+
+    return np.array(bboxes, dtype=np.float32).reshape((-1, 4, 2)), tags, texts
 
 import random
-def crop_area_v2(im, polys, tags, crop_background=False, min_crop_side_ratio=0.24, max_tries=50):
+def crop_area_v2(im, polys, tags, texts=None, crop_background=False, min_crop_side_ratio=0.24, max_tries=50):
     '''
     make random crop from the input image
     :param im:
@@ -99,6 +108,7 @@ def crop_area_v2(im, polys, tags, crop_background=False, min_crop_side_ratio=0.2
     pad_w = w//10
     h_array = np.zeros((h + pad_h*2), dtype=np.int32)
     w_array = np.zeros((w + pad_w*2), dtype=np.int32)
+
     for poly in polys:
         poly = np.round(poly, decimals=0).astype(np.int32)
         minx = np.min(poly[:, 0])
@@ -111,7 +121,8 @@ def crop_area_v2(im, polys, tags, crop_background=False, min_crop_side_ratio=0.2
     h_axis = np.where(h_array == 0)[0]
     w_axis = np.where(w_array == 0)[0]
     if len(h_axis) == 0 or len(w_axis) == 0:
-        return im, polys, tags
+        return im, polys, tags, texts
+
     for i in range(max_tries):
         xx = np.random.choice(w_axis, size=2)
         xmin = np.min(xx) - pad_w
@@ -135,15 +146,20 @@ def crop_area_v2(im, polys, tags, crop_background=False, min_crop_side_ratio=0.2
         if len(selected_polys) == 0:
             # no text in this area
             if crop_background:
-                return im[ymin:ymax+1, xmin:xmax+1, :], polys[selected_polys], tags[selected_polys]
+                texts = list(map(lambda x: texts[x], selected_polys))
+                return im[ymin:ymax+1, xmin:xmax+1, :], polys[selected_polys], tags[selected_polys], texts
             else:
                 continue
         im = im[ymin:ymax+1, xmin:xmax+1, :]
         polys = polys[selected_polys]
         tags = tags[selected_polys]
+
+        if texts is not None:
+            texts = list(map(lambda x: texts[x], selected_polys))
+
         polys[:, :, 0] -= xmin
         polys[:, :, 1] -= ymin
-        return im, polys, tags
+        return im, polys, tags, texts
 
     return im, polys, tags
 
@@ -272,7 +288,7 @@ def is_polygon(poly):
                     return False
     return True
 
-def check_and_validate_polys(polys, tags, xxx_todo_changeme):
+def check_and_validate_polys(polys, tags, xxx_todo_changeme, texts=None):
     '''
     check so that the text poly is in the same direction,
     and also filter some invalid polygons
@@ -281,14 +297,18 @@ def check_and_validate_polys(polys, tags, xxx_todo_changeme):
     :return:
     '''
     (h, w) = xxx_todo_changeme
+    
     if polys.shape[0] == 0:
-        return polys, np.array(tags)
+        return polys, np.array(tags), texts
+
     polys[:, :, 0] = np.clip(polys[:, :, 0], 0, w-1)
     polys[:, :, 1] = np.clip(polys[:, :, 1], 0, h-1)
 
     validated_polys = []
     validated_tags = []
-    for poly, tag in zip(polys, tags):
+    validated_texts = []
+
+    for i, (poly, tag) in enumerate(zip(polys, tags)):
         p_area = polygon_area(poly)
         if abs(p_area) < 1:
             continue
@@ -301,7 +321,10 @@ def check_and_validate_polys(polys, tags, xxx_todo_changeme):
 
         validated_polys.append(poly)
         validated_tags.append(tag)
-    return np.array(validated_polys), np.array(validated_tags)
+        if texts is not None:
+            validated_texts.append(texts[i])
+
+    return np.array(validated_polys), np.array(validated_tags), validated_texts
 
 def shrink_poly(poly, r):
     '''
@@ -408,6 +431,7 @@ def find_long_edges(points, bottoms):
         long_edge_2.append((start, end))
         i = (i + 1) % n_pts
     return long_edge_1, long_edge_2
+    
 def norm2(x, axis=None):
     if axis:
         return np.sqrt(np.sum(x ** 2, axis=axis))
@@ -517,7 +541,7 @@ def sort_rectangle(poly):
             p2_index = (p3_index + 3) % 4
             return poly[[p0_index, p1_index, p2_index, p3_index]], angle
 
-def generate_gaussian_target(polys, h, w, training_mask):
+def generate_gaussian_target(polys, h, w, training_mask, texts=None, keywords=None):
     """
     Args:
         polys: [4, 2]
@@ -532,6 +556,12 @@ def generate_gaussian_target(polys, h, w, training_mask):
     densebox_anchor = np.indices((h, w))[::-1].astype(np.float32)
     mask = np.zeros((h, w))
 
+    num_keywords = len(keywords) if keywords is not None else 0
+
+    phoc_map = np.zeros((num_keywords, h, w))
+
+    vector = np.zeros((num_keywords,))
+    
     for poly_idx, poly in enumerate(polys):
         
         r = [None, None, None, None]
@@ -545,7 +575,16 @@ def generate_gaussian_target(polys, h, w, training_mask):
         shrinked_poly = shrink_poly(poly.copy(), r).astype(np.int32)[np.newaxis, :, :]
         cv2.fillPoly(border_map, [poly], 1)
         cv2.fillPoly(border_map, shrinked_poly, 0)
-        cv2.fillPoly(mask, shrinked_poly, 1)
+        cv2.fillPoly(mask, poly.astype(np.int32)[np.newaxis, :, :], 1)
+
+        if keywords is not None:
+            # phmask = np.zeros((h, w))
+            # cv2.fillPoly(phmask, poly.astype(np.int32)[np.newaxis, :, :], 1)
+            curr_text = texts[poly_idx]
+            for idx in curr_text:
+                cv2.fillPoly(phoc_map[idx], poly.astype(np.int32)[np.newaxis, :, :], 1)
+            # phoc_map[curr_text] = phoc_map[curr_text] + np.concatenate([phmask[np.newaxis, :, :]] * len(curr_text), axis=0)
+
         poly_h = min(np.linalg.norm(poly[0] - poly[3]), np.linalg.norm(poly[1] - poly[2]))
         poly_w = min(np.linalg.norm(poly[0] - poly[1]), np.linalg.norm(poly[2] - poly[3]))
         
@@ -656,10 +695,10 @@ def generate_gaussian_target(polys, h, w, training_mask):
     
     densebox = densebox - np.tile(densebox_anchor, (4, 1, 1))
     densebox = densebox * mask[np.newaxis, :, :]
-    return heat_map, border_map, geometry_map, training_mask, densebox
+    return heat_map, border_map, geometry_map, training_mask, densebox, phoc_map
 
 class IC15Loader(data.Dataset):
-    def __init__(self, root_dir, is_transform=False, img_size=None, kernel_num=7, min_scale=0.4):
+    def __init__(self, root_dir, is_transform=False, img_size=None, kernel_num=7, min_scale=0.4, kwd=None):
         self.is_transform = is_transform
         
         self.img_size = img_size if (img_size is None or isinstance(img_size, tuple)) else (img_size, img_size)
@@ -699,7 +738,13 @@ class IC15Loader(data.Dataset):
         self.img_paths = list(map(lambda x: self.img_paths[x], indexes))
         self.gt_paths = list(map(lambda x: self.gt_paths[x], indexes))
 
-    def __len__(self):
+        self.keywords = None
+        if kwd is not None:
+            with open(kwd, 'r') as f:
+                self.keywords = json.load(f)
+        print(self.keywords)
+
+    def __len__(self): 
         return len(self.img_paths)
 
     def __getitem__(self, index):
@@ -712,15 +757,17 @@ class IC15Loader(data.Dataset):
 
         img = get_img(img_path)
         h, w = img.shape[:2]
-        bboxes, tags = get_bboxes(img, gt_path)
-        bboxes, tags = check_and_validate_polys(bboxes, tags, (h, w))
+        bboxes, tags, texts = get_bboxes(img, gt_path, keywords=self.keywords)
+        print(texts)
+        texts = texts if self.keywords is not None else None
+        bboxes, tags, texts = check_and_validate_polys(bboxes, tags, (h, w), texts)
 
         rd_scale = np.random.choice(self.random_scale)
         img = cv2.resize(img, dsize=None, fx=rd_scale, fy=rd_scale)
         bboxes *= rd_scale
         
         # else:
-        img, bboxes, tags = crop_area_v2(img, bboxes, tags, crop_background=False)
+        img, bboxes, tags, texts = crop_area_v2(img, bboxes, tags, texts=texts, crop_background=False)
         img = img.copy()
         # resize the image to input size
         new_h, new_w, _ = img.shape
@@ -746,17 +793,20 @@ class IC15Loader(data.Dataset):
         training_mask = np.ones(img.shape[0:2], dtype='uint8')
         densebox = np.zeros((8, h, w), np.float32)
 
+        phoc_map = np.zeros((len(self.keywords), h, w))
+
         if bboxes.shape[0] > 0:
             bboxes = bboxes.astype(np.int32)
             h, w = img.shape[:2]
             t1 = time.time()
-            gt_text, border_map, geo_map, training_mask, densebox = generate_gaussian_target(bboxes, h, w, training_mask)
+            gt_text, border_map, geo_map, training_mask, densebox, phoc_map = generate_gaussian_target(bboxes, h, w, training_mask, texts, self.keywords)
             dur = time.time() - t1
             for i in range(bboxes.shape[0]):
                 if not tags[i]:
                     cv2.drawContours(training_mask, [bboxes[i]], -1, 0, -1)
-        if np.random.uniform(0, 1) > 0.7:
-            img, border_map, gt_text, training_mask = random_rotate([img, border_map, gt_text, training_mask])
+
+        # if np.random.uniform(0, 1) > 0.7:
+        #     img, border_map, gt_text, training_mask, phoc_map = random_rotate([img, border_map, gt_text, training_mask, phoc_map])
             
         if self.is_transform:
             img = Image.fromarray(img)
@@ -776,16 +826,17 @@ class IC15Loader(data.Dataset):
         border_map = torch.from_numpy(border_map).float()
         geo_map = torch.from_numpy(geo_map).float()
         densebox = torch.from_numpy(densebox).float()
-        # '''
+        phoc_map = torch.from_numpy(phoc_map).float()
 
-        return img, probability_map, training_mask, np.array(ori_img).transpose((2, 0, 1)), border_map, geo_map, densebox
+        return img, probability_map, training_mask, np.array(ori_img).transpose((2, 0, 1)), border_map, geo_map, densebox, phoc_map
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     root_dir = sys.argv[1]
-    ic15dataset = IC15Loader(root_dir=root_dir, is_transform=True, img_size=512)
+    ic15dataset = IC15Loader(root_dir=root_dir, is_transform=True, img_size=512, kwd='assert/word_dict.json')
+
     for item in ic15dataset:
-        img, pb_map, train_mask, ori_img, border_map, geo_map, densebox = item
+        img, pb_map, train_mask, ori_img, border_map, geo_map, densebox, phoc_map = item
         ori_img = ori_img.transpose((1, 2, 0))
         # print(f'img_shape:{img.shape}, pb_map_shape:{pb_map.shape}, densebox:{densebox.shape}')
         seg_map_3c = np.repeat(pb_map[:, :, None].numpy(),3,2)*255
@@ -793,14 +844,14 @@ if __name__ == "__main__":
         dense_heatmap=cv2.applyColorMap(densebox.astype(np.uint8), cv2.COLORMAP_JET)
 
         heatmap=cv2.applyColorMap(seg_map_3c.astype(np.uint8), cv2.COLORMAP_JET)
-        border_mapc = geo_map[:, :, 0].numpy()
+        
         # save_img=np.concatenate((np.array(ori_img),att_im),1)
         region = np.where(seg_map_3c[:, :, 0] > int(0 * 255), np.ones_like(seg_map_3c[:, :, 0]) * 255, np.zeros_like(seg_map_3c[:, :, 0]))
         other_region = np.where(seg_map_3c[:, :, 0] > int(0. * 255), seg_map_3c[:, :, 0], np.zeros_like(seg_map_3c[:, :, 0]))
-        region = other_region
+        region = phoc_map[76, :, :].numpy() * 255
         heatmap=cv2.applyColorMap(region.astype(np.uint8), cv2.COLORMAP_JET)
         att_im = cv2.addWeighted(heatmap, 0.7, np.array(ori_img)[:, :,::-1], 0.2, 0.0)
-        cv2.imshow('heatmap', dense_heatmap)
+        # cv2.imshow('heatmap', dense_heatmap)
         cv2.imshow('pb_map', att_im)
 
         cv2.waitKey()

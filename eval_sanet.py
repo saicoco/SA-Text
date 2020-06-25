@@ -184,10 +184,19 @@ def test(args):
             sys.stdout.flush()
     model.eval()
     if args.onnx:
-        import torch.onnx.symbolic_opset9
-        dummy_input = torch.autograd.Variable(torch.randn(1, 3, 640, 640)).cpu()
-        torch.onnx.export(model, dummy_input, 'dbnet.onnx', verbose=False)
+        import torch.onnx.symbolic_opset9 as onnx_symbolic
+        def upsample_nearest_2d(g, input, output_size):
+            scales = g.op('Constant', value_t=torch.Tensor([1., 1., 2., 2.]))
+            return g.op("Upsample", input, scales, mode_s='nearest')
+        onnx_symbolic = upsample_nearest_2d
+        dummy_input = torch.autograd.Variable(torch.randn(1, 3, 2400, 2400)).cpu()
+        torch.onnx.export(model, dummy_input, 'sanet_v3.onnx', verbose=False,
+        input_names=["input"],	
+        output_names=["gaussian_map", 'border_map'],
+        dynamic_axes = {'input':{0:'b', 2:'h', 3:'w'}, 'gaussian_map':{0:'b', 2:'h', 3:'w'}, 'border_map':{0:'b', 2:'h', 3:'w'}}
+        )
         return 0
+
     total_frame = 0.0
     total_time = 0.0
     

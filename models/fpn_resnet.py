@@ -283,7 +283,6 @@ class ResNet(nn.Module):
         # heads for probability_map, threshold_map, binarization_map
         gaussian_map = self.gaussian_head(out)
         border_map = self.center_head(out)
-#         geometry_map = F.tanh(self.geo_head(out)) * 512.
         return gaussian_map, border_map
 
 

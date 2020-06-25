@@ -151,7 +151,7 @@ class Slice(OnnxOpConverter):
         return _op.strided_slice(inputs[0], begin=starts, end=ends)
 ```
 
-#### Optimize
+#### TVM-Optimize
 Before optimize graph, here need to star rpc server for autotvm by following commands:
 ```shell
 
@@ -171,11 +171,30 @@ python tvm_optimize/tvm_optimize_graph.py
 python tvm_optimize/optimized_graph_inference.py
 ```
 
+#### TensorRT-Optimize
+Here are three steps to optimize graph by tensorrt:
+- onnx-simplifier[https://github.com/daquexian/onnx-simplifier]: Simplify onnx model
+- Generate engine 
+- TensorRT(7.0) Python-API for inferencc
+
+Simplify onnx model:
+```
+pip3 install onnx-simplifier
+python -m onnxsim textdetection_satext.onnx textdetection_satext_sim.onnx --input-shape 1,3,1024,1024
+```
+Generate engine for onnx model:
+```
+python onnx_engine.py textdetection_satext_sim.onnx textdetection_satext.plan
+```
+Inference with engine:
+```
+python inference_trt.py /home/gengjiajia/rsync/ICDAR/icpr_dataset/  textdetection_satext.plan
+```
 #### Inference time
 Just for network inference time with shape(512x512), as following table shows:
-|  | pytorch | tvm |
-| ---------- | ------------ | ----------- |
-| network-inference | 20ms | 10ms |
+|  | pytorch | tvm | Tensorrt-python-API |
+| ---------- | ------------ | ----------- | --------- |
+| network-inference | 20ms | 10ms | 13ms |
 
 
 ## Differences from original paper
