@@ -112,10 +112,10 @@ def inference(data_dir, engine_path, long_side_size=1024):
             
             t1 = time.time()
             trt_outputs = common.do_inference_v2(context, bindings=bindings, inputs=inputs, outputs=outputs, stream=stream)
-            gaussian_map = trt_outputs[0].reshape((shape[0]//4, shape[1]//4))
-            boxes, scores = postprocess(gaussian_map)
             dur = time.time() - t1
             times.append(dur)
+            gaussian_map = trt_outputs[0].reshape((shape[0]//4, shape[1]//4))
+            boxes, scores = postprocess(gaussian_map)
             
             polys = []
             if boxes is not None:

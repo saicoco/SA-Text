@@ -173,9 +173,9 @@ python tvm_optimize/optimized_graph_inference.py
 
 #### TensorRT-Optimize
 Here are three steps to optimize graph by tensorrt:
-- onnx-simplifier[https://github.com/daquexian/onnx-simplifier]: Simplify onnx model
+- [onnx-simplifier](https://github.com/daquexian/onnx-simplifier): Simplify onnx model
 - Generate engine 
-- TensorRT(7.0) Python-API for inferencc
+- TensorRT(7.0) Python-API for inference
 
 Simplify onnx model:
 ```
