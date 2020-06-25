@@ -188,7 +188,7 @@ python onnx_engine.py textdetection_satext_sim.onnx textdetection_satext.plan
 ```
 Inference with engine:
 ```
-python inference_trt.py /home/gengjiajia/rsync/ICDAR/icpr_dataset/  textdetection_satext.plan
+python inference_trt.py icpr_dataset/  textdetection_satext.plan
 ```
 #### Inference time
 Just for network inference time with shape(512x512), as following table shows:
